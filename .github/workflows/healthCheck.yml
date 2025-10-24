@@ -1,0 +1,22 @@
+name: Periodic Health Check
+
+on:
+  # For testing — manually or on push
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 12 * * *' 
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if app is alive
+        uses: Jtalk/url-health-check-action@v3
+        with:
+          url: https://full-stack-open-pokedex-x66f.onrender.com/health
+          follow-redirect: false
+          max-attempts: 3
+          retry-delay: 10s
+          retry-all: true
