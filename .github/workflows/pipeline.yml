@@ -1,24 +1,87 @@
-name: Deployment Pipeline
+name: Deployment Pipeline (skip-able)
 
-on: 
-    push:
-        branches:
-            - main
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, closed]
+
+permissions:
+  contents: write
 
 jobs:
-    simple_deployment_pipeline:
-        runs-on: ubuntu-latest
+  detect_skip:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.detect.outputs.skip }} 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        steps:
-            - uses: actions/checkout@v2
-            - uses: actions/setup-node@v2
-              with:
-                  node-version: '20'
-            - name: Install dependencies
-              run: npm install
-            - name: Check style
-              run: npm run eslint
-            - name: Build project
-              run: npm run build
-            - name: Run tests
-              run: npm test
+      - name: Detect #skip
+        id: detect
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commits = context.payload.commits || [];
+            const messages = commits.map(c => c.message || '').join('\n');
+            const shouldSkip = messages.toLowerCase().includes('#skip');
+            core.setOutput('skip', shouldSkip ? 'true' : 'false');
+            console.log('Should skip?', shouldSkip);
+
+  simple_deployment_pipeline:
+    needs: detect_skip
+    if: ${{ needs.detect_skip.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install
+      - run: npm run eslint
+      - run: npm run build
+      - run: npm test
+
+      - name: Deploy
+        if: ${{ github.event_name == 'push' }}
+        run: curl https://api.render.com/deploy/srv-${{ secrets.RENDER_SERVICE_ID }}?key=${{ secrets.RENDER_API_KEY }}
+
+      - name: Notify Discord on success
+        if: ${{ success() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          AUTHOR: ${{ github.actor }}
+        run: |
+          payload="{\"content\":\"✅ Deployment succeeded\nRepo: ${REPO}\nCommit: ${COMMIT_URL}\nAuthor: ${AUTHOR}\"}"
+          curl -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
+
+      - name: Notify Discord on failure
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          payload="{\"content\":\"❌ Deployment failed\nRepo: ${REPO}\nCommit: ${COMMIT_URL}\nBranch: ${BRANCH}\nActor: ${ACTOR}\nMessage: ${MESSAGE}\"}"
+          curl -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
+
+  tag_release:
+    needs: [simple_deployment_pipeline]
+    if: ${{ needs.detect_skip.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anothrNick/github-tag-action@1.64.0
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
