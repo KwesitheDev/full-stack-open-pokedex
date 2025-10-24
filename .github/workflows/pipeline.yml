@@ -1,52 +1,61 @@
-name: Deployment Pipeline
+name: Deployment Pipeline (skip-able)
 
-on: 
+on:
   push:
     branches:
       - main
-
   pull_request:
     branches: [main]
-    types: [opened, synchronize]
+    types: [opened, synchronize, closed]
+
+permissions:
+  contents: write
 
 jobs:
-  simple_deployment_pipeline:
+  detect_skip:
     runs-on: ubuntu-latest
-
+    outputs:
+      skip: ${{ steps.detect.outputs.skip }}
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v2
+      - name: Detect #skip
+        id: detect
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commits = context.payload.commits || [];
+            const messages = commits.map(c => c.message || '').join('\n');
+            const shouldSkip = messages.toLowerCase().includes('#skip');
+            core.setOutput('skip', shouldSkip ? 'true' : 'false');
+            console.log('Should skip?', shouldSkip);
+
+  simple_deployment_pipeline:
+    needs: detect_skip
+    if: ${{ needs.detect_skip.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Check style
-        run: npm run eslint
-
-      - name: Build project
-        run: npm run build
-
-      - name: Run tests
-        run: npm test
-
+      - run: npm install
+      - run: npm run eslint
+      - run: npm run build
+      - run: npm test
       - name: Deploy
         if: ${{ github.event_name == 'push' }}
         run: curl https://api.render.com/deploy/srv-${{ secrets.RENDER_SERVICE_ID }}?key=${{ secrets.RENDER_API_KEY }}
 
   tag_release:
     needs: [simple_deployment_pipeline]
+    if: ${{ needs.detect_skip.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Bump version and push tag
+      - uses: actions/checkout@v4
+      - uses: anothrNick/github-tag-action@1.64.0
         if: ${{ github.event_name == 'push' }}
-        uses: anothrNick/github-tag-action@1.64.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BUMP: patch
